@@ -1,233 +1,82 @@
-# Price Tracker Dashboard
+# Price Tracker
 
-A full-stack price tracking application that monitors product prices and sends email notifications when prices drop. Built with Java Spring Boot, Python Beautiful Soup, MySQL, and Docker.
+A Spring Boot REST API that tracks product prices with a scheduled Python scraper and emails you when a price drops or hits your target.
 
-## Features
+![Screenshot of the Price Tracker dashboard](docs/screenshot.png)
+<!-- TODO: add docs/screenshot.png -->
 
-- User account management
-- Product price tracking with web scraping
-- Email notifications when prices drop or reach target price
-- RESTful API for dashboard operations
-- Scheduled price checks
-- Docker containerization for easy deployment
+## What it does
+- Register users and add product URLs to track, with an optional target price.
+- Re-checks every product on a schedule (hourly by default) and records each price in a history table.
+- Emails the owner when the price falls below the last recorded price or reaches the target. Alerts can be toggled per product.
+- Includes a small static dashboard (HTML/JS) served by Spring at `/`.
 
-## Tech Stack
+## Tech stack
+Java 17 · Spring Boot 3.2 (Web, Data JPA, Validation, Mail, Scheduling) · MySQL 8 · Lombok · Python 3 (Requests, Beautiful Soup) · Docker / Docker Compose
 
-- **Backend**: Java Spring Boot 3.2.0
-- **Web Scraping**: Python 3 with Beautiful Soup
-- **Database**: MySQL 8.0
-- **Containerization**: Docker & Docker Compose
-- **Email**: Spring Mail (SMTP)
+## How it works
 
-## Project Structure
-
-```
-pricetracker/
-├── src/
-│   └── main/
-│       ├── java/com/pricetracker/
-│       │   ├── controller/     # REST API endpoints
-│       │   ├── service/        # Business logic
-│       │   ├── repository/     # Data access layer
-│       │   ├── model/          # JPA entities
-│       │   └── dto/            # Data transfer objects
-│       └── resources/
-│           └── application.yml # Configuration
-├── python/
-│   ├── scraper.py              # Web scraping script
-│   └── requirements.txt        # Python dependencies
-├── Dockerfile
-├── docker-compose.yml
-└── pom.xml
+```mermaid
+flowchart LR
+    UI[Static dashboard] -->|REST| C[Controllers]
+    C --> S[Services]
+    S --> R[Spring Data JPA repositories] --> DB[(MySQL)]
+    SCH["PriceCheckScheduler<br/>@Scheduled"] --> SC[ScrapingService]
+    SC -->|ProcessBuilder| PY["python3 scraper.py &lt;url&gt;"]
+    PY -->|price on stdout| SC
+    SCH --> E[EmailService<br/>Spring Mail / SMTP]
 ```
 
-## Prerequisites
+- **Layered architecture:** controller → service → repository, with validated DTOs (`@Valid`, `@NotBlank`, `@Email`) at the API boundary, so JPA entities aren't bound directly from request bodies.
+- **Java ↔ Python bridge:** `ScrapingService` runs `scraper.py` as a subprocess and reads the price from stdout. Scraping stays in Python (Beautiful Soup), while persistence and scheduling stay in Spring.
+- **Scraper strategy:** Amazon gets a site-specific path. Other sites go through CSS price selectors, then JSON-LD (`application/ld+json`), then the `product:price:amount` meta tag. Requests use a retrying session (backoff on 429/5xx).
+- **Scheduling & alerts:** `@Scheduled(fixedRateString = "${app.scraping.interval-ms}")` updates prices, then compares the newest price against the previous history entry to decide which emails to send.
+- **12-factor config:** DB and SMTP credentials come from environment variables, with placeholders in `application.yml` and `docker-compose.yml`.
 
-- Docker and Docker Compose
-- Maven 3.6+ (for local development)
-- Java 17+ (for local development)
-- Python 3.8+ (for local development)
+## Build & run
 
-## Quick Start with Docker
-
-1. **Clone or navigate to the project directory**
-
-2. **Set up required environment variables**
-
-   Database (MySQL) credentials:
-   ```bash
-   export MYSQL_ROOT_PASSWORD=your-root-password
-   export SPRING_DATASOURCE_URL="jdbc:mysql://mysql:3306/pricetracker?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true"
-   export SPRING_DATASOURCE_USERNAME=root
-   export SPRING_DATASOURCE_PASSWORD=your-app-password
-   ```
-
-   Email credentials (optional, for email notifications):
-   ```bash
-   export MAIL_USERNAME=your-email@gmail.com
-   export MAIL_PASSWORD=your-app-password
-   ```
-
-3. **Start the application**:
-   ```bash
-   docker-compose up -d
-   ```
-
-4. **Check logs**:
-   ```bash
-   docker-compose logs -f app
-   ```
-
-The application will be available at `http://localhost:8080`
-
-## Local Development
-
-### 1. Set up MySQL Database
-
-Start MySQL (using Docker or local installation):
+### Docker Compose (recommended)
 ```bash
-docker run -d --name mysql -e MYSQL_ROOT_PASSWORD=rootpassword -e MYSQL_DATABASE=pricetracker -p 3306:3306 mysql:8.0
+docker compose up --build
 ```
+This starts MySQL 8 (with a health check) and the app on <http://localhost:8080>. The app image is a multi-stage build: Maven builds the jar, and the runtime image is a JRE with Python and the scraper's dependencies installed.
 
-### 2. Configure Application
+Set real values through environment variables or a `.env` file next to `docker-compose.yml`:
 
-The application reads most sensitive settings from environment variables.
-For local development without Docker, you can export them before running:
+| Variable | Purpose |
+|---|---|
+| `MYSQL_ROOT_PASSWORD` / `SPRING_DATASOURCE_PASSWORD` | DB password (defaults to `change-me`) |
+| `MAIL_USERNAME` / `MAIL_PASSWORD` | SMTP login (e.g. a Gmail app password) |
 
+Check it's up: `curl localhost:8080/api/health` → `{"service":"Price Tracker API","status":"UP"}`
+
+### Local (without Docker)
+Requires Java 17, Maven, Python 3 and a MySQL instance.
 ```bash
-export SPRING_DATASOURCE_URL="jdbc:mysql://localhost:3306/pricetracker?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true"
-export SPRING_DATASOURCE_USERNAME=root
-export SPRING_DATASOURCE_PASSWORD=your-app-password
-export MAIL_USERNAME=your-email@gmail.com
-export MAIL_PASSWORD=your-app-password
-```
-
-You generally should not hard-code real passwords into `src/main/resources/application.yml`.
-
-### 3. Install Python Dependencies
-
-```bash
-cd python
-pip3 install -r requirements.txt
-```
-
-### 4. Build and Run Spring Boot Application
-
-```bash
-mvn clean install
+pip install -r python/requirements.txt
 mvn spring-boot:run
 ```
 
-## API Endpoints
+### API
 
-### User Management
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/users` | Create a user (`username`, `email`, `password`) |
+| `GET` | `/api/users/{id}`, `/api/users/email/{email}` | Look up a user |
+| `POST` | `/api/products` | Track a product (`name`, `url`, `userId`, optional `targetPrice`) |
+| `GET` | `/api/products`, `/api/products/{id}`, `/api/products/user/{userId}` | List / get products |
+| `DELETE` | `/api/products/{id}` | Stop tracking |
+| `POST` | `/api/products/{id}/check-price` | Scrape one product now |
+| `POST` | `/api/products/{id}/toggle-email-notifications` | Turn alerts on/off |
+| `POST` | `/api/scraping/check-price`, `/api/scraping/check-all` | Manual scrape triggers |
+| `GET` | `/api/health` | Health check |
 
-- `POST /api/users` - Create a new user
-  ```json
-  {
-    "username": "john_doe",
-    "email": "john@example.com",
-    "password": "password123"
-  }
-  ```
+## Challenges & what I learned
+- **Crossing a language boundary:** calling Python from Java with `ProcessBuilder` meant handling exit codes, merged stderr, and parsing failures, and treating "no price found" as a normal outcome instead of a crash.
+- **Scraping is brittle:** real product pages change often, so the scraper falls back through several strategies, and a failed scrape for one product doesn't stop the batch.
+- **Containerizing a two-runtime app:** one image needs both a JRE and Python. `depends_on` with a MySQL health check stops the app from starting before the database is ready.
 
-- `GET /api/users/{id}` - Get user by ID
-- `GET /api/users/email/{email}` - Get user by email
-
-### Product Management
-
-- `POST /api/products` - Add a product to track
-  ```json
-  {
-    "name": "Example Product",
-    "url": "https://example.com/product",
-    "targetPrice": 99.99,
-    "userId": 1
-  }
-  ```
-
-- `GET /api/products/user/{userId}` - Get all products for a user
-- `GET /api/products/{id}` - Get product by ID
-- `GET /api/products` - Get all products
-- `DELETE /api/products/{id}` - Delete a product
-- `POST /api/products/{id}/check-price` - Manually trigger price check
-
-## Configuration
-
-### Application Properties
-
-Key configuration in `application.yml`:
-
-- **Database**: Configure MySQL connection
-- **Email**: Set SMTP settings for notifications
-- **Scraping**: Adjust price check interval (default: 60 minutes)
-
-### Email Setup
-
-For Gmail:
-1. Enable 2-factor authentication
-2. Generate an App Password
-3. Use the app password in `MAIL_PASSWORD`
-
-## How It Works
-
-1. **User Registration**: Users create accounts via the API
-2. **Product Tracking**: Users add products with URLs and optional target prices
-3. **Price Scraping**: Python script scrapes prices from product URLs
-4. **Scheduled Checks**: Spring Boot scheduler runs price checks at configured intervals
-5. **Notifications**: Email alerts sent when:
-   - Price drops below previous price
-   - Price reaches or goes below target price
-
-## Web Scraping
-
-The Python scraper (`python/scraper.py`) supports:
-- Amazon product pages
-- Generic e-commerce sites (using common price selectors)
-- JSON-LD structured data
-- Meta tags
-
-To test the scraper manually:
-```bash
-python3 python/scraper.py "https://example.com/product"
-```
-
-## Database Schema
-
-- **users**: User accounts
-- **products**: Tracked products with URLs and prices
-- **price_history**: Historical price records
-
-## Troubleshooting
-
-### Python Script Not Found
-Ensure the Python script path in `application.yml` matches your setup:
-```yaml
-app:
-  python:
-    script-path: python/scraper.py
-```
-
-### Email Not Sending
-- Verify SMTP credentials
-- Check firewall/network settings
-- Review application logs for errors
-
-### Scraping Failures
-- Some websites may block automated requests
-- Check if the website structure has changed
-- Review scraper logs for specific errors
-
-## Future Enhancements
-
-- Authentication and authorization (JWT)
-- Password hashing (BCrypt)
-- More robust web scraping with Selenium for JavaScript-heavy sites
-- Frontend dashboard UI
-- Price history charts
-- Multiple notification channels (SMS, push notifications)
+**Known limitations / next steps:** passwords are stored in plain text (hashing is a TODO in `UserService`), there's no authentication on the API yet, and there are no automated tests.
 
 ## License
-
-MIT License
-
+[MIT](LICENSE)
