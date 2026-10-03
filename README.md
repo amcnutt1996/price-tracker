@@ -3,7 +3,7 @@
 A Spring Boot REST API that tracks product prices with a scheduled Python scraper and emails you when a price drops or hits your target.
 
 ![Screenshot of the Price Tracker dashboard](docs/screenshot.png)
-<!-- TODO: add docs/screenshot.png -->
+<sub>Screenshot: local Docker Compose run with test data.</sub>
 
 ## What it does
 - Register users and add product URLs to track, with an optional target price.
